@@ -1,24 +1,44 @@
 use std::{
     thread,
+    collections::HashMap,
     net::{TcpListener, TcpStream},
     sync::mpsc::{channel, Sender},
     io::{Write, BufReader, BufRead, BufWriter, ErrorKind}
 };
 
 
-/// `Server` state structure.
-///
-/// While the server is running, it is necessary to keep the socket 
-/// listening and the clients that have an active connection. 
-struct Server {
-    listener: TcpListener
-}
-
-
 fn main() {
     let server = Server::new("127.0.0.1:3000");
 
     server.run();
+}
+
+
+/// `Server` state structure.
+///
+/// While the server is running, it is necessary to keep the socket 
+/// listening and the clients that have an active connection.
+struct Server {
+    listener: TcpListener,
+    clients: HashMap<TcpStream, String>
+}
+
+/// Contains the type of action that occurred while processing the request.
+#[derive(Debug)]
+enum ActionType {
+    ClientConnect,
+    ClientDisconnect
+}
+
+
+/// `Action` message structure.
+///
+/// Each client is processed by a separate thread, so it is necessary 
+/// to interaction between threads. This happens with `Action` structure. 
+#[derive(Debug)]
+struct Action {
+    client: TcpStream,
+    action_type: ActionType
 }
 
 
@@ -34,7 +54,8 @@ impl Server {
             .expect("set_nonblocking call failed");
 
         Server {
-            listener: listener
+            listener: listener,
+            clients: HashMap::new()
         }
     }
 
@@ -48,7 +69,7 @@ impl Server {
         // For each stream, a copy of the sender channel (tx - transceiver) 
         // is created, which sends information from the user's processing 
         // stream through this copy. 
-        let (tx, rx) = channel::<String>();
+        let (tx, rx) = channel::<Action>();
 
         loop {
             // Since the `accept` call does not block the thread of execution, 
@@ -71,19 +92,24 @@ impl Server {
                 }
             }
 
-            for message in rx.try_iter() {
-                println!("recieve message in rx: {:?}", message);
+            for action in rx.try_iter() {
+                println!("recieve action in rx: {:?}", action);
             }
         }
     }
 
 
     /// Handling a new client in a separate thread.
-    fn handle_connection(stream: &TcpStream, tx: &Sender<String>) {
+    fn handle_connection(stream: &TcpStream, tx: &Sender<Action>) {
         let mut reader = BufReader::new(stream);
         let mut writer = BufWriter::new(stream.try_clone().unwrap());
 
-        tx.send(String::from("new client")).unwrap();
+        tx.send(
+            Action {
+                client: stream.try_clone().unwrap(),
+                action_type: ActionType::ClientConnect
+            }
+        ).unwrap();
 
         // Waiting for user input and posting a message to a channel.
         loop {
@@ -91,8 +117,14 @@ impl Server {
 
             match reader.read_line(&mut message) {
                 Ok(0) => {
-                    // Upon receipt of 0 data from the client ended 
-                    tx.send(String::from("client disconnect")).unwrap();
+                    // Upon receipt of 0 data from the client ended.
+                    tx.send(
+                        Action {
+                            client: stream.try_clone().unwrap(),
+                            action_type: ActionType::ClientDisconnect
+                        }
+                    ).unwrap();
+
                     break;
                 },
                 Ok(_) => {
